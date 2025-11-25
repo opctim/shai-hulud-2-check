@@ -35,4 +35,5 @@ This script is provided "AS IS" without any warranties. The author assumes no li
 ## More Info
 
 https://www.aikido.dev/blog/shai-hulud-strikes-again-hitting-zapier-ensdomains
+
 https://www.wiz.io/blog/shai-hulud-2-0-ongoing-supply-chain-attack
