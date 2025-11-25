@@ -19,7 +19,7 @@ CSV_URL="https://raw.githubusercontent.com/wiz-sec-public/wiz-research-iocs/refs
 DIR="$1"
 [ -d "$DIR" ] || { echo "Error: not a directory: $DIR" >&2; exit 2; }
 
-for cmd in jq curl find awk; do
+for cmd in jq curl find awk yq; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "Error: $cmd is required." >&2; exit 2; }
 done
 
@@ -46,7 +46,7 @@ awk -F, 'NR>1 {
   }
 }' "$TMP_CSV" > "$TMP_VULN"
 
-# jq program reused for each lockfile
+# jq program reused for each npm package-lock.json
 read -r -d '' JQ_PROG <<'EOF' || true
   if .packages then
     .packages
@@ -69,7 +69,7 @@ FOUND_ANY=0
 
 # Find and scan all package-lock.json files recursively
 while IFS= read -r LOCKFILE; do
-  echo "Scanning: $LOCKFILE" >&2
+  echo "Scanning npm lockfile: $LOCKFILE" >&2
 
   INSTALLED_PACKAGES="$(jq -r "$JQ_PROG" "$LOCKFILE" 2>/dev/null || true)"
 
@@ -86,6 +86,50 @@ while IFS= read -r LOCKFILE; do
   done <<< "$INSTALLED_PACKAGES"
 
 done < <(find "$DIR" -type f -name "package-lock.json")
+
+# Find and scan all pnpm-lock.yaml files recursively
+while IFS= read -r PLOCK; do
+  echo "Scanning pnpm lockfile: $PLOCK" >&2
+
+  # Extract "name version" pairs from pnpm-lock.yaml
+  # .packages keys look like:
+  #   "/left-pad@1.3.0"
+  #   "/@scope/name@2.0.0"
+  #   "/foo@1.0.0(bar@2.0.0)"  (peer suffix)
+  INSTALLED_PACKAGES="$(
+    yq -r '.packages // {} | to_entries[].key' "$PLOCK" 2>/dev/null \
+    | awk '
+      {
+        key = $0
+        gsub(/^\/+/, "", key)        # remove leading "/"
+        sub(/\([^)]*\)$/, "", key)   # drop "(...)" peer suffix if present
+
+        # Split at last "@": before -> name, after -> version
+        i = match(key, /@[^@]*$/)
+        if (i > 0) {
+          name = substr(key, 1, i-1)
+          ver  = substr(key, i+1)
+          if (name != "" && ver != "") {
+            print name " " ver
+          }
+        }
+      }
+    '
+  )"
+
+  while read -r NAME VER; do
+    [ -z "$NAME" ] || [ -z "$VER" ] && continue
+
+    if awk -v n="$NAME" -v v="$VER" '
+        $1 == n && $2 == v { found=1 }
+        END { exit found ? 0 : 1 }
+      ' "$TMP_VULN"; then
+      FOUND_ANY=1
+      echo "VULNERABLE: $NAME@$VER (in $PLOCK)"
+    fi
+  done <<< "$INSTALLED_PACKAGES"
+
+done < <(find "$DIR" -type f -name "pnpm-lock.yaml")
 
 if (( FOUND_ANY )); then
   printf "\n[EMERGENCY] Vulnerable packages found.\n" >&2
