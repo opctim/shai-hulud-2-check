@@ -146,32 +146,107 @@ done < <(find "$DIR" -type f -name "pnpm-lock.yaml")
 while IFS= read -r YLOCK; do
   echo "Scanning yarn lockfile: $YLOCK" >&2
 
-  INSTALLED_PACKAGES="$(
-    awk '
-      /^[^[:space:]].*:$/ {
-        # remove trailing colon + quotes
-        line = $0
-        gsub(/"/, "", line)
-        sub(/:$/, "", line)
+    # Detect yarn.lock format
+    if grep -q '^__metadata:' "$YLOCK"; then
+    YARN_LOCK_FORMAT="v2"
+    else
+    YARN_LOCK_FORMAT="v1"
+    fi
 
-        # extract name before the last "@"
-        i = match(line, /@[^@]*$/)
-        if (i > 0) {
-          name = substr(line, 1, i-1)
-        } else {
-          next
+    echo "Detected Yarn lockfile format: $YARN_LOCK_FORMAT" >&2
+
+    # YARN v1 (classic)
+    if [ "$YARN_LOCK_FORMAT" = "v1" ]; then
+
+    INSTALLED_PACKAGES="$(
+        awk '
+        /^[^[:space:]].*:$/ {
+            # remove trailing colon + quotes
+            line = $0
+            gsub(/"/, "", line)
+            sub(/:$/, "", line)
+
+            # extract name before the last "@"
+            i = match(line, /@[^@]*$/)
+            if (i > 0) {
+            name = substr(line, 1, i-1)
+            } else {
+            next
+            }
+            next
         }
-        next
-      }
 
-      /version / {
-        gsub(/"/, "", $0)
-        ver = $2
-        if (name != "" && ver != "")
-          print name, ver
-      }
-    ' "$YLOCK"
-  )"
+        /version / {
+            gsub(/"/, "", $0)
+            ver = $2
+
+            if (name != "" && ver != "")
+            print name, ver
+        }
+        ' "$YLOCK"
+    )"
+
+    # YARN v2+ (Berry)
+    else
+
+    # Only the version from "version" is taken,
+
+    INSTALLED_PACKAGES="$(
+        awk '
+        /^[^[:space:]].*:$/ {
+
+            header = $0
+            gsub(/"/, "", header)
+            sub(/:$/, "", header)
+
+            delete pkgs
+            pkg_count = 0
+
+            n = split(header, parts, /, +/)
+
+            for (i = 1; i <= n; i++) {
+            p = parts[i]
+
+            gsub(/@npm:/, "@", p)
+            gsub(/@patch:/, "@", p)
+            gsub(/@workspace:/, "@", p)
+            gsub(/@link:/, "@", p)
+            gsub(/@portal:/, "@", p)
+            gsub(/@file:/, "@", p)
+            gsub(/@virtual:/, "@", p)
+
+            idx = match(p, /@[^@]*$/)
+            if (idx > 0) {
+                name = substr(p, 1, idx-1)
+
+                pkgs[++pkg_count] = name
+            }
+            }
+
+            next
+        }
+
+        /^[[:space:]]+version:/ {
+
+            ver = $2
+            gsub(/"/, "", ver)
+
+            if (ver != "" && pkg_count > 0) {
+            for (i = 1; i <= pkg_count; i++) {
+                print pkgs[i], ver
+            }
+            }
+        }
+
+        ' "$YLOCK"
+    )"
+
+    fi
+
+
+  if [ -z "$INSTALLED_PACKAGES" ]; then
+    echo "Warning! Could not find any packages in $YLOCK - NOT Tested!"
+  fi
 
   while read -r NAME VER; do
     [ -z "$NAME" ] || [ -z "$VER" ] && continue
@@ -183,6 +258,20 @@ while IFS= read -r YLOCK; do
       FOUND_ANY=1
       echo "VULNERABLE: $NAME@$VER (in $YLOCK)"
     fi
+
+    # Warn about using another version of vulnerable package 
+    if ! awk -v n="$NAME" -v v="$VER" '
+        $1 == n && $2 == v { found=1 }
+        END { exit found ? 0 : 1 }
+    ' "$TMP_VULN" && \
+    awk -v n="$NAME" '
+        $1 == n { print "  ↳ known vulnerable version:", $2; found=1 }
+        END { exit found ? 0 : 1 }
+    ' "$TMP_VULN"; then
+
+    echo "INFO: $NAME@$VER is used, but vulnerable versions exist (see above)"
+    fi
+
   done <<< "$INSTALLED_PACKAGES"
 
 done < <(find "$DIR" -type f -name "yarn.lock")
