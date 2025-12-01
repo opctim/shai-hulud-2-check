@@ -12,7 +12,7 @@ A simple bash script that will scan your project dir for package-lock.json, pnpm
 
 ## Usage
 
-    ./shai-hulud-2-check.sh /Users/jdoe/my/project
+    ./check-shai-hulud-2.sh /Users/jdoe/my/project
 
 If you prefer to use a local copy of the vulnerability CSV, set the `SHAI_HULUD_CSV` environment variable:
 
